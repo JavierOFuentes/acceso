@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12263f">
+<link rel="manifest" href="manifest.json">
+<title>Control de acceso vehicular</title>
+<style>
+  :root{--ok:#0e8a3e;--no:#c0261c;--warn:#b26a00;--bg:#12263f}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Arial,sans-serif;background:#eef1f5;color:#111}
+  header{background:var(--bg);color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center}
+  header b{font-size:15px}
+  #estado{font-size:11px;opacity:.85}
+  main{padding:12px;max-width:560px;margin:0 auto}
+  #lector{width:100%;border-radius:10px;overflow:hidden;background:#000}
+  .panel{margin-top:12px;border-radius:12px;padding:16px;color:#fff;display:none}
+  .panel.on{display:block}
+  .verde{background:var(--ok)} .roja{background:var(--no)} .amarilla{background:var(--warn)}
+  .veredicto{font-size:26px;font-weight:800;letter-spacing:.5px}
+  .patente{font-size:40px;font-weight:800;margin:6px 0;letter-spacing:2px}
+  .dato{font-size:15px;line-height:1.45}
+  .aviso{margin-top:10px;font-size:13px;background:rgba(255,255,255,.18);padding:8px 10px;border-radius:8px}
+  .fila{display:flex;gap:8px;margin-top:12px}
+  input,button{font-size:16px;padding:11px;border-radius:9px;border:1px solid #c3cbd6}
+  input{flex:1;min-width:0}
+  button{background:var(--bg);color:#fff;border:0;font-weight:600}
+  button.sec{background:#5a6b80}
+  .pie{margin-top:14px;font-size:12px;color:#5a6b80;text-align:center;line-height:1.6}
+</style>
+</head>
+<body>
+<header>
+  <b>Acceso vehicular</b>
+  <span id="estado">iniciando…</span>
+</header>
+
+<main>
+  <div id="lector"></div>
+
+  <div id="panel" class="panel">
+    <div class="veredicto" id="veredicto"></div>
+    <div class="patente" id="patente"></div>
+    <div class="dato" id="detalle"></div>
+    <div class="aviso" id="aviso"></div>
+  </div>
+
+  <div class="fila">
+    <input id="manual" placeholder="Código o patente (si el QR no lee)" autocomplete="off">
+    <button onclick="buscarManual()">Buscar</button>
+  </div>
+  <div class="fila">
+    <button class="sec" style="flex:1" onclick="sincronizar(true)">Actualizar base</button>
+    <button class="sec" style="flex:1" onclick="reiniciar()">Nuevo escaneo</button>
+  </div>
+
+  <div class="pie">
+    Verificá SIEMPRE que la patente en pantalla coincida con la del vehículo.<br>
+    <span id="infoBase"></span>
+  </div>
+</main>
+
+<script src="html5-qrcode.min.js"></script>
+<script>
+/* ================= CONFIGURACIÓN ================= */
+const API   = 'https://script.google.com/macros/s/AKfycbzSKdPxCIYiav8M0K6tr3ZpESzqMUtxlKu0msj6eY0ii26CKXLKBvFiYlZm477BSP8-3A/exec';';   // termina en /exec
+const CLAVE = 'jfkdidhdkfdkso85l5lg95l';            // igual que en Codigo.gs
+const PREFIJO = 'PK:';
+const PUESTO  = 'Portón principal';                 // identifica al puesto en el registro
+/* ================================================= */
+
+let BASE = null, lector = null, ultimo = 0;
+
+/* ---------- base local (funciona sin señal) ---------- */
+function cargarLocal(){
+  try{ BASE = JSON.parse(localStorage.getItem('base')||'null'); }catch(e){ BASE=null; }
+  pintarEstado();
+}
+function pintarEstado(){
+  const est = document.getElementById('estado');
+  if(!BASE){ est.textContent='sin base — actualizá'; est.style.color='#ffb4ae'; }
+  else{
+    const f = new Date(BASE.version);
+    est.textContent = 'base al '+f.toLocaleDateString('es-AR')+' '+f.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+    est.style.color = (Date.now()-f.getTime() > 7*864e5) ? '#ffd27a' : '#bfe8cd';
+    document.getElementById('infoBase').textContent = BASE.total+' vehículos en la base.';
+  }
+}
+async function sincronizar(avisar){
+  try{
+    const r = await fetch(API+'?action=data&k='+encodeURIComponent(CLAVE), {redirect:'follow'});
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    BASE = d;
+    localStorage.setItem('base', JSON.stringify(d));
+    pintarEstado();
+    enviarPendientes();
+    if(avisar) alert('Base actualizada: '+d.total+' vehículos.');
+  }catch(e){
+    if(avisar) alert('No se pudo actualizar (sin conexión). Se sigue usando la última base descargada.');
+  }
+}
+
+/* ---------- verificación ---------- */
+function limpiar(t){
+  t = String(t||'').trim().toUpperCase();
+  if(t.indexOf(PREFIJO.toUpperCase())===0) t = t.substr(PREFIJO.length);
+  return t;
+}
+function porPatente(p){
+  p = p.replace(/[^A-Z0-9]/g,'');
+  for(const c in BASE.r) if(BASE.r[c].p.replace(/[^A-Z0-9]/g,'')===p) return c;
+  return null;
+}
+function verificar(texto){
+  if(!BASE){ mostrar('roja','SIN BASE','','Actualizá la base con señal antes de operar.',''); return; }
+  let cod = limpiar(texto);
+  let reg = BASE.r[cod];
+  if(!reg && /^[A-Z0-9 ]{5,9}$/.test(cod)){ const c = porPatente(cod); if(c){ cod=c; reg=BASE.r[c]; } }
+
+  if(!reg){ mostrar('roja','NO AUTORIZADO','—','Código o patente no figura en la base.',''); log(cod,'','NO AUTORIZADO'); return; }
+
+  const detalle = reg.n+'<br>'+(reg.m||'')+' · '+(reg.s||'')+'<br><small>'+(reg.h||'')+'</small>';
+  const venc = reg.v ? new Date(reg.v+'T23:59:59') : null;
+
+  if(reg.e==='BAJA' || reg.e==='SUSPENDIDO'){
+    mostrar('roja','NO AUTORIZADO', reg.p, detalle, 'Estado: '+reg.e+(reg.o?' — '+reg.o:''));
+    log(cod,reg.p,'NO AUTORIZADO ('+reg.e+')'); return;
+  }
+  if(venc && venc < new Date()){
+    mostrar('roja','VENCIDO', reg.p, detalle, 'Autorización vencida el '+reg.v);
+    log(cod,reg.p,'VENCIDO'); return;
+  }
+  mostrar('verde','AUTORIZADO', reg.p, detalle, reg.o ? reg.o : 'Comparar la patente con el vehículo.');
+  log(cod,reg.p,'AUTORIZADO');
+}
+function mostrar(clase,ver,pat,det,aviso){
+  const p = document.getElementById('panel');
+  p.className = 'panel on '+clase;
+  document.getElementById('veredicto').textContent = ver;
+  document.getElementById('patente').textContent = pat;
+  document.getElementById('detalle').innerHTML = det;
+  document.getElementById('aviso').innerHTML = aviso;
+  if(navigator.vibrate) navigator.vibrate(clase==='verde'?120:[90,70,90]);
+  window.scrollTo(0,0);
+}
+
+/* ---------- auditoría (se acumula sin señal y se envía al sincronizar) ---------- */
+function log(c,p,r){
+  const q = JSON.parse(localStorage.getItem('pend')||'[]');
+  q.push({t:Date.now(), c:c, p:p, r:r, g:PUESTO});
+  localStorage.setItem('pend', JSON.stringify(q.slice(-500)));
+  enviarPendientes();
+}
+function enviarPendientes(){
+  const q = JSON.parse(localStorage.getItem('pend')||'[]');
+  if(!q.length || !navigator.onLine) return;
+  fetch(API, {method:'POST', body: JSON.stringify({k:CLAVE, eventos:q})})
+    .then(function(){ localStorage.setItem('pend','[]'); })
+    .catch(function(){});
+}
+
+/* ---------- cámara ---------- */
+function iniciarLector(){
+  lector = new Html5Qrcode('lector');
+  lector.start({facingMode:'environment'}, {fps:10, qrbox:{width:240,height:240}},
+    function(txt){
+      const ahora = Date.now();
+      if(ahora - ultimo < 2500) return;   // evita relecturas del mismo QR
+      ultimo = ahora;
+      verificar(txt);
+    }, function(){}
+  ).catch(function(){
+    document.getElementById('lector').innerHTML =
+      '<div style="color:#fff;padding:18px;font-size:14px">No se pudo abrir la cámara. '+
+      'Permitir el acceso en el navegador y recargar, o usar la búsqueda manual.</div>';
+  });
+}
+function reiniciar(){
+  document.getElementById('panel').className='panel';
+  document.getElementById('manual').value='';
+  ultimo = 0;
+}
+function buscarManual(){ verificar(document.getElementById('manual').value); }
+document.getElementById('manual').addEventListener('keydown', function(e){ if(e.key==='Enter') buscarManual(); });
+
+cargarLocal();
+sincronizar(false);
+iniciarLector();
+window.addEventListener('online', function(){ sincronizar(false); });
+if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>

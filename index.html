@@ -25,6 +25,8 @@
   .dato{font-size:15px;line-height:1.45}
   .aviso{margin-top:10px;font-size:13px;background:rgba(255,255,255,.18);padding:8px 10px;border-radius:8px}
   .aviso:empty{display:none}
+  .hor{margin-top:5px;font-size:14px;line-height:1.35;opacity:.92}
+  .hor:empty{display:none}
 
   /* selector de patentes cuando la persona tiene más de un vehículo */
   #lista{margin-top:12px;display:flex;flex-direction:column;gap:8px}
@@ -155,19 +157,13 @@ function resolver(texto){
 }
 
 /* ---------- evaluación de un vehículo ---------- */
-function fmtFecha(iso){
-  const m = String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return m ? m[3]+'/'+m[2]+'/'+m[1] : (iso||'');
-}
 function evaluar(v){
   if(v.e==='BAJA' || v.e==='SUSPENDIDO')
     return {ok:false, ver:'NO AUTORIZADO', msg:'Estado del vehículo: '+v.e};
-  if(v.f){
-    const d = new Date(v.f+'T23:59:59');
-    if(!isNaN(d.getTime()) && d < new Date())
-      return {ok:false, ver:'VENCIDO', msg:'Autorización vencida el '+fmtFecha(v.f)};
-  }
   return {ok:true, ver:'AUTORIZADO', msg:'Comparar la patente con el vehículo.'};
+}
+function horario(per){
+  return per.h ? '<div class="hor">'+per.h+'</div>' : '';
 }
 
 /* ---------- flujo principal ---------- */
@@ -189,7 +185,7 @@ function verificar(texto){
     return;
   }
   if(!r.per.a.length){
-    pintar('amarilla','SIN VEHÍCULO','', r.per.n, 'La persona no tiene vehículos cargados en la base.');
+    pintar('amarilla','SIN VEHÍCULO','', r.per.n+horario(r.per), 'La persona no tiene vehículos cargados en la base.');
     log(r.cod,'',r.per.n,'SIN VEHICULO');
     return;
   }
@@ -209,7 +205,7 @@ function listar(){
            '<span class="vm">'+[v.m, ev.ok?'':ev.ver].filter(Boolean).join(' · ')+'</span>'+
          '</button>';
   });
-  pintar('azul','ELEGIR PATENTE','', per.n+'<br><small>'+per.a.length+' vehículos en la base</small>',
+  pintar('azul','ELEGIR PATENTE','', per.n+horario(per)+'<div class="hor">'+per.a.length+' vehículos en la base</div>',
          'Tocá la patente del vehículo que está entrando. Se registra la que elijas.');
   document.getElementById('lista').innerHTML = h;
 }
@@ -217,8 +213,8 @@ function listar(){
 /** Decisión final sobre un vehículo concreto. Es lo único que se registra. */
 function elegir(i){
   const per = ACTUAL.per, v = per.a[i], ev = evaluar(v);
-  const detalle = per.n + (v.m||v.s ? '<br>'+[v.m,v.s].filter(Boolean).join(' · ') : '');
-  var aviso = ev.msg + (v.o ? '<br>'+v.o : '');
+  const detalle = per.n + (v.m||v.s ? '<br>'+[v.m,v.s].filter(Boolean).join(' · ') : '') + horario(per);
+  var aviso = ev.msg;
   if(per.a.length>1){
     aviso += '<br><button class="volver" onclick="listar()">Ver las otras patentes</button>';
   }

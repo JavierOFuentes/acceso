@@ -18,15 +18,32 @@
   .panel{margin-top:12px;border-radius:12px;padding:16px;color:#fff;display:none}
   .panel.on{display:block}
   .verde{background:var(--ok)} .roja{background:var(--no)} .amarilla{background:var(--warn)}
+  .azul{background:var(--bg)}
   .veredicto{font-size:26px;font-weight:800;letter-spacing:.5px}
   .patente{font-size:40px;font-weight:800;margin:6px 0;letter-spacing:2px}
+  .patente:empty{margin:0}
   .dato{font-size:15px;line-height:1.45}
   .aviso{margin-top:10px;font-size:13px;background:rgba(255,255,255,.18);padding:8px 10px;border-radius:8px}
+  .aviso:empty{display:none}
+
+  /* selector de patentes cuando la persona tiene más de un vehículo */
+  #lista{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+  #lista:empty{display:none}
+  .veh{width:100%;text-align:left;background:#fff;color:#12263f;border:0;border-radius:10px;
+       padding:12px 14px;display:flex;flex-direction:column;gap:2px;cursor:pointer}
+  .veh:focus-visible{outline:3px solid #ffd27a;outline-offset:2px}
+  .veh .vp{font-size:27px;font-weight:800;letter-spacing:1.5px;line-height:1.1}
+  .veh .vm{font-size:13px;color:#5a6b80}
+  .veh.mal{background:#f2d7d5}
+  .veh.mal .vp{color:#8d1a13;text-decoration:line-through}
+  .veh.mal .vm{color:#8d1a13;font-weight:700}
+
   .fila{display:flex;gap:8px;margin-top:12px}
   input,button{font-size:16px;padding:11px;border-radius:9px;border:1px solid #c3cbd6}
   input{flex:1;min-width:0}
   button{background:var(--bg);color:#fff;border:0;font-weight:600}
   button.sec{background:#5a6b80}
+  .volver{margin-top:10px;background:rgba(255,255,255,.22);color:#fff;font-size:13px;padding:8px 12px;border-radius:8px}
   .pie{margin-top:14px;font-size:12px;color:#5a6b80;text-align:center;line-height:1.6}
 </style>
 </head>
@@ -43,6 +60,7 @@
     <div class="veredicto" id="veredicto"></div>
     <div class="patente" id="patente"></div>
     <div class="dato" id="detalle"></div>
+    <div id="lista"></div>
     <div class="aviso" id="aviso"></div>
   </div>
 
@@ -70,86 +88,160 @@ const PREFIJO = 'PK:';
 const PUESTO  = 'Portón principal';                 // identifica al puesto en el registro
 /* ================================================= */
 
-let BASE = null, lector = null, ultimo = 0;
+let BASE = null, lector = null, ultimo = 0, ACTUAL = null;
 
 /* ---------- base local (funciona sin señal) ---------- */
 function cargarLocal(){
   try{ BASE = JSON.parse(localStorage.getItem('base')||'null'); }catch(e){ BASE=null; }
+  // La base guardada por la versión anterior tenía otra estructura (BASE.r).
+  // Si es de esas, se descarta para que nadie opere con datos mal leídos.
+  if(BASE && !BASE.p){ BASE=null; localStorage.removeItem('base'); }
   pintarEstado();
 }
 function pintarEstado(){
   const est = document.getElementById('estado');
-  if(!BASE){ est.textContent='sin base — actualizá'; est.style.color='#ffb4ae'; }
-  else{
-    const f = new Date(BASE.version);
-    est.textContent = 'base al '+f.toLocaleDateString('es-AR')+' '+f.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
-    est.style.color = (Date.now()-f.getTime() > 7*864e5) ? '#ffd27a' : '#bfe8cd';
-    document.getElementById('infoBase').textContent = BASE.total+' vehículos en la base.';
-  }
+  if(!BASE){ est.textContent='sin base — actualizá'; est.style.color='#ffb4ae'; return; }
+  const f = new Date(BASE.version);
+  est.textContent = 'base al '+f.toLocaleDateString('es-AR')+' '+f.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+  est.style.color = (Date.now()-f.getTime() > 7*864e5) ? '#ffd27a' : '#bfe8cd';
+  document.getElementById('infoBase').textContent =
+    BASE.personas+' personas · '+BASE.total+' vehículos en la base.';
 }
 async function sincronizar(avisar){
   try{
     const r = await fetch(API+'?action=data&k='+encodeURIComponent(CLAVE), {redirect:'follow'});
     const d = await r.json();
     if(d.error) throw new Error(d.error);
+    if(!d.p) throw new Error('respuesta_vieja');
     BASE = d;
     localStorage.setItem('base', JSON.stringify(d));
     pintarEstado();
     enviarPendientes();
-    if(avisar) alert('Base actualizada: '+d.total+' vehículos.');
+    if(avisar) alert('Base actualizada: '+d.personas+' personas, '+d.total+' vehículos.');
   }catch(e){
-    if(avisar) alert('No se pudo actualizar (sin conexión). Se sigue usando la última base descargada.');
+    if(avisar) alert('No se pudo actualizar (sin conexión o backend desactualizado). '+
+                     'Se sigue usando la última base descargada.');
   }
 }
 
-/* ---------- verificación ---------- */
+/* ---------- resolución del código ---------- */
 function limpiar(t){
   t = String(t||'').trim().toUpperCase();
   if(t.indexOf(PREFIJO.toUpperCase())===0) t = t.substr(PREFIJO.length);
   return t;
 }
-function porPatente(p){
-  p = p.replace(/[^A-Z0-9]/g,'');
-  for(const c in BASE.r) if(BASE.r[c].p.replace(/[^A-Z0-9]/g,'')===p) return c;
+function soloAlfaNum(t){ return String(t||'').replace(/[^A-Z0-9]/g,''); }
+
+/** Devuelve {cod, per, sel} donde sel es el índice del vehículo a preseleccionar (-1 = ninguno). */
+function resolver(texto){
+  const t = limpiar(texto);
+  if(!t) return null;
+
+  if(BASE.p[t]) return {cod:t, per:BASE.p[t], sel:-1};          // código de persona
+
+  const a = BASE.x[t];                                          // QR viejo de vehículo
+  if(a && BASE.p[a.c]) return {cod:a.c, per:BASE.p[a.c], sel:a.i, viejo:t};
+
+  const pat = soloAlfaNum(t);                                   // búsqueda por patente
+  if(pat.length>=5){
+    for(const c in BASE.p){
+      const autos = BASE.p[c].a;
+      for(var i=0;i<autos.length;i++){
+        if(soloAlfaNum(autos[i].p)===pat) return {cod:c, per:BASE.p[c], sel:i};
+      }
+    }
+  }
   return null;
 }
-function verificar(texto){
-  if(!BASE){ mostrar('roja','SIN BASE','','Actualizá la base con señal antes de operar.',''); return; }
-  let cod = limpiar(texto);
-  let reg = BASE.r[cod];
-  if(!reg && /^[A-Z0-9 ]{5,9}$/.test(cod)){ const c = porPatente(cod); if(c){ cod=c; reg=BASE.r[c]; } }
 
-  if(!reg){ mostrar('roja','NO AUTORIZADO','—','Código o patente no figura en la base.',''); log(cod,'','NO AUTORIZADO'); return; }
-
-  const detalle = reg.n+'<br>'+(reg.m||'')+' · '+(reg.s||'')+'<br><small>'+(reg.h||'')+'</small>';
-  const venc = reg.v ? new Date(reg.v+'T23:59:59') : null;
-
-  if(reg.e==='BAJA' || reg.e==='SUSPENDIDO'){
-    mostrar('roja','NO AUTORIZADO', reg.p, detalle, 'Estado: '+reg.e+(reg.o?' — '+reg.o:''));
-    log(cod,reg.p,'NO AUTORIZADO ('+reg.e+')'); return;
-  }
-  if(venc && venc < new Date()){
-    mostrar('roja','VENCIDO', reg.p, detalle, 'Autorización vencida el '+reg.v);
-    log(cod,reg.p,'VENCIDO'); return;
-  }
-  mostrar('verde','AUTORIZADO', reg.p, detalle, reg.o ? reg.o : 'Comparar la patente con el vehículo.');
-  log(cod,reg.p,'AUTORIZADO');
+/* ---------- evaluación de un vehículo ---------- */
+function fmtFecha(iso){
+  const m = String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? m[3]+'/'+m[2]+'/'+m[1] : (iso||'');
 }
-function mostrar(clase,ver,pat,det,aviso){
+function evaluar(v){
+  if(v.e==='BAJA' || v.e==='SUSPENDIDO')
+    return {ok:false, ver:'NO AUTORIZADO', msg:'Estado del vehículo: '+v.e};
+  if(v.f){
+    const d = new Date(v.f+'T23:59:59');
+    if(!isNaN(d.getTime()) && d < new Date())
+      return {ok:false, ver:'VENCIDO', msg:'Autorización vencida el '+fmtFecha(v.f)};
+  }
+  return {ok:true, ver:'AUTORIZADO', msg:'Comparar la patente con el vehículo.'};
+}
+
+/* ---------- flujo principal ---------- */
+function verificar(texto){
+  if(!BASE){ pintar('roja','SIN BASE','','','Actualizá la base con señal antes de operar.'); return; }
+
+  const r = resolver(texto);
+  if(!r){
+    ACTUAL = null;
+    pintar('roja','NO AUTORIZADO','—','','Código o patente no figura en la base.');
+    log(limpiar(texto),'','','NO AUTORIZADO');
+    return;
+  }
+  ACTUAL = r;
+
+  if(r.per.e==='BAJA' || r.per.e==='SUSPENDIDO'){
+    pintar('roja','NO AUTORIZADO','', r.per.n, 'Persona dada de baja ('+r.per.e+'). Ningún vehículo habilitado.');
+    log(r.cod,'',r.per.n,'NO AUTORIZADO (PERSONA '+r.per.e+')');
+    return;
+  }
+  if(!r.per.a.length){
+    pintar('amarilla','SIN VEHÍCULO','', r.per.n, 'La persona no tiene vehículos cargados en la base.');
+    log(r.cod,'',r.per.n,'SIN VEHICULO');
+    return;
+  }
+  if(r.per.a.length===1){ elegir(0); return; }   // un solo auto: directo
+  if(r.sel>=0){ elegir(r.sel); return; }         // vino por patente o QR viejo
+  listar();
+}
+
+/** Persona con varios vehículos: el guardia toca la patente que está entrando. */
+function listar(){
+  const per = ACTUAL.per;
+  var h = '';
+  per.a.forEach(function(v,i){
+    const ev = evaluar(v);
+    h += '<button class="veh'+(ev.ok?'':' mal')+'" onclick="elegir('+i+')">'+
+           '<span class="vp">'+v.p+'</span>'+
+           '<span class="vm">'+[v.m, ev.ok?'':ev.ver].filter(Boolean).join(' · ')+'</span>'+
+         '</button>';
+  });
+  pintar('azul','ELEGIR PATENTE','', per.n+'<br><small>'+per.a.length+' vehículos en la base</small>',
+         'Tocá la patente del vehículo que está entrando. Se registra la que elijas.');
+  document.getElementById('lista').innerHTML = h;
+}
+
+/** Decisión final sobre un vehículo concreto. Es lo único que se registra. */
+function elegir(i){
+  const per = ACTUAL.per, v = per.a[i], ev = evaluar(v);
+  const detalle = per.n + (v.m||v.s ? '<br>'+[v.m,v.s].filter(Boolean).join(' · ') : '');
+  var aviso = ev.msg + (v.o ? '<br>'+v.o : '');
+  if(per.a.length>1){
+    aviso += '<br><button class="volver" onclick="listar()">Ver las otras patentes</button>';
+  }
+  pintar(ev.ok?'verde':'roja', ev.ver, v.p, detalle, aviso);
+  log(ACTUAL.cod, v.p, per.n, ev.ver);
+}
+
+function pintar(clase,ver,pat,det,aviso){
   const p = document.getElementById('panel');
   p.className = 'panel on '+clase;
   document.getElementById('veredicto').textContent = ver;
-  document.getElementById('patente').textContent = pat;
-  document.getElementById('detalle').innerHTML = det;
-  document.getElementById('aviso').innerHTML = aviso;
-  if(navigator.vibrate) navigator.vibrate(clase==='verde'?120:[90,70,90]);
+  document.getElementById('patente').textContent   = pat||'';
+  document.getElementById('detalle').innerHTML     = det||'';
+  document.getElementById('lista').innerHTML       = '';
+  document.getElementById('aviso').innerHTML       = aviso||'';
+  if(navigator.vibrate) navigator.vibrate(clase==='verde'?120:(clase==='azul'?60:[90,70,90]));
   window.scrollTo(0,0);
 }
 
 /* ---------- auditoría (se acumula sin señal y se envía al sincronizar) ---------- */
-function log(c,p,r){
+function log(c,p,n,r){
   const q = JSON.parse(localStorage.getItem('pend')||'[]');
-  q.push({t:Date.now(), c:c, p:p, r:r, g:PUESTO});
+  q.push({t:Date.now(), c:c, p:p, n:n, r:r, g:PUESTO});
   localStorage.setItem('pend', JSON.stringify(q.slice(-500)));
   enviarPendientes();
 }
@@ -179,7 +271,9 @@ function iniciarLector(){
 }
 function reiniciar(){
   document.getElementById('panel').className='panel';
+  document.getElementById('lista').innerHTML='';
   document.getElementById('manual').value='';
+  ACTUAL = null;
   ultimo = 0;
 }
 function buscarManual(){ verificar(document.getElementById('manual').value); }

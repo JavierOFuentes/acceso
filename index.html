@@ -28,6 +28,13 @@
   .hor{margin-top:5px;font-size:14px;line-height:1.35;opacity:.92}
   .hor:empty{display:none}
 
+  /* franja de aviso: la persona tiene que pasar por Gerencia */
+  .ger{margin-top:11px;background:#ffd27a;color:#3d2a00;border-radius:9px;padding:10px 12px}
+  .ger .t{font-size:17px;font-weight:800;letter-spacing:.4px;line-height:1.2}
+  .ger .m{font-size:15px;margin-top:3px;line-height:1.3}
+  .ger .h{font-size:13px;margin-top:4px;font-weight:700}
+  .ger .p{font-size:12px;margin-top:4px;opacity:.8;line-height:1.3}
+
   /* selector de patentes cuando la persona tiene más de un vehículo */
   #lista{margin-top:12px;display:flex;flex-direction:column;gap:8px}
   #lista:empty{display:none}
@@ -88,6 +95,28 @@ const API   = 'https://script.google.com/macros/s/AKfycbzSKdPxCIYiav8M0K6tr3ZpES
 const CLAVE = 'jfkdidhdkfdkso85l5lg95l';            // igual que en Codigo.gs
 const PREFIJO = 'PK:';
 const PUESTO  = 'Portón principal';                 // identifica al puesto en el registro
+
+/* Avisos de Gerencia.
+   La persona con AVISO cargado entra igual la primera vez y el guardia le
+   avisa. El plazo NO se cuenta en días sino en ventanas de atención: Gerencia
+   atiende días hábiles de GER_DESDE a GER_HASTA. Se bloquea recién cuando dejó
+   pasar VENTANAS_PLAZO ventana(s) enteras posteriores al aviso, así que nadie
+   queda bloqueado por un horario que no le daba.
+   Ej.: aviso el viernes a las 22 -> su ventana es el lunes de 8 a 12; entra
+   sábado, domingo y el lunes hasta las 12. Aviso el lunes a las 10 (con la
+   ventana del lunes ya empezada) -> su ventana es el martes de 8 a 12. */
+const GER_DESDE = 8;        // hora en que abre Gerencia
+const GER_HASTA = 12;       // hora en que cierra
+const VENTANAS_PLAZO = 1;   // ventanas completas que se le dan
+/* Días en que Gerencia no atiende. Cuentan igual que un sábado o un domingo:
+   el plazo de un aviso los saltea.
+   La lista de verdad es la hoja FERIADOS de la planilla y baja con la base
+   (BASE.f), así que se corrige desde ahí sin tocar este archivo. Esto de acá
+   abajo es sólo la red por si un teléfono todavía no sincronizó. */
+const FERIADOS = ['2026-01-01','2026-02-16','2026-02-17','2026-03-23','2026-03-24',
+                  '2026-04-02','2026-04-03','2026-05-01','2026-05-25','2026-06-15',
+                  '2026-06-20','2026-07-09','2026-07-20','2026-08-17','2026-10-12',
+                  '2026-11-23','2026-12-07','2026-12-08','2026-12-25'];
 /* ================================================= */
 
 let BASE = null, lector = null, ultimo = 0, ACTUAL = null;
@@ -156,6 +185,90 @@ function resolver(texto){
   return null;
 }
 
+/* ---------- ventanas de atención de Gerencia ---------- */
+function dosD(n){ return (n<10?'0':'')+n; }
+function isoDe(d){ return d.getFullYear()+'-'+dosD(d.getMonth()+1)+'-'+dosD(d.getDate()); }
+function selloDe(d){ return isoDe(d)+'T'+dosD(d.getHours())+':'+dosD(d.getMinutes()); }
+function feriados(){
+  return (BASE && BASE.f && BASE.f.length) ? BASE.f : FERIADOS;
+}
+function esHabil(d){
+  const s = d.getDay();
+  if(s===0 || s===6) return false;               // fin de semana
+  return feriados().indexOf(isoDe(d))===-1;      // feriado o asueto
+}
+/** 'aaaa-mm-dd' o 'aaaa-mm-ddThh:mm' -> Date. Sin hora se asume el final del
+    día: ante la duda no se le descuenta una ventana que quizás no tuvo. */
+function parseSello(t){
+  const m = String(t||'').match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2}))?/);
+  if(!m) return null;
+  const conHora = m[4]!==undefined;
+  return new Date(+m[1], +m[2]-1, +m[3], conHora?+m[4]:23, conHora?+m[5]:59, 0, 0);
+}
+/** Fin de la ventana de atención con la que se le vence el plazo. */
+function vencePlazo(aviso){
+  var dia = new Date(aviso.getFullYear(), aviso.getMonth(), aviso.getDate(), 0,0,0,0);
+  var n = 0, tope = 0, fin = null;
+  while(n < VENTANAS_PLAZO && tope < 120){
+    const abre   = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate(), GER_DESDE, 0, 0, 0);
+    const cierra = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate(), GER_HASTA, 0, 0, 0);
+    // sólo cuenta la ventana que empieza después del aviso: si el aviso lo
+    // recibió a las 10, la de ese día ya estaba empezada y no se le computa.
+    if(esHabil(dia) && abre >= aviso){ n++; fin = cierra; }
+    if(n >= VENTANAS_PLAZO) break;
+    dia.setDate(dia.getDate()+1); tope++;
+  }
+  return fin;
+}
+function gerenciaAbierta(){
+  const h = new Date();
+  return esHabil(h) && h.getHours() >= GER_DESDE && h.getHours() < GER_HASTA;
+}
+function fmtFecha(iso){
+  const d = parseSello(iso);
+  return d ? dosD(d.getDate())+'/'+dosD(d.getMonth()+1) : (iso||'');
+}
+function fmtHora(iso){
+  const t = String(iso||'').match(/T(\d{1,2}):(\d{2})/);
+  return t ? ' a las '+t[1]+':'+t[2] : '';
+}
+function fmtMomento(d){
+  const n = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+  const hoy = new Date();
+  const mismo = d.toDateString()===hoy.toDateString();
+  return (mismo ? 'hoy' : n[d.getDay()]+' '+dosD(d.getDate())+'/'+dosD(d.getMonth()+1))+
+         ' a las '+d.getHours()+' hs';
+}
+/** {hay, txt, ad, fin, vencido}. Se calcula en el teléfono y no en el backend
+    porque la base queda cacheada: si no, el bloqueo llegaría tarde. */
+function verAviso(per){
+  if(!per || !per.av) return {hay:false};
+  const o = {hay:true, txt:per.av, ad:per.ad||'', fin:null, vencido:false};
+  if(!o.ad) return o;                       // todavía no se le avisó
+  const aviso = parseSello(o.ad);
+  if(!aviso) return o;
+  o.fin = vencePlazo(aviso);
+  if(o.fin) o.vencido = new Date() > o.fin;
+  return o;
+}
+function bloqueAviso(a){
+  if(!a.hay) return '';
+  var pie;
+  if(!a.ad)          pie = 'Primer aviso. Dejalo pasar y decile que vaya.';
+  else if(a.vencido) pie = 'Avisado el '+fmtFecha(a.ad)+fmtHora(a.ad)+'. Tenía tiempo hasta el '+
+                           fmtMomento(a.fin)+' y no se presentó.';
+  else if(a.fin)     pie = 'Avisado el '+fmtFecha(a.ad)+fmtHora(a.ad)+'. Tiene tiempo hasta '+
+                           fmtMomento(a.fin)+'.'+(gerenciaAbierta()?' Ahora está abierta.':'');
+  else               pie = 'Avisado el '+fmtFecha(a.ad)+fmtHora(a.ad)+'.';
+  return '<div class="ger"><div class="t">PRESENTARSE EN GERENCIA</div>'+
+         '<div class="m">'+a.txt+'</div>'+
+         '<div class="h">Atiende días hábiles de '+GER_DESDE+' a '+GER_HASTA+' hs</div>'+
+         '<div class="p">'+pie+'</div></div>';
+}
+function guardarBase(){
+  try{ localStorage.setItem('base', JSON.stringify(BASE)); }catch(e){}
+}
+
 /* ---------- evaluación de un vehículo ---------- */
 function evaluar(v){
   if(v.e==='BAJA' || v.e==='SUSPENDIDO')
@@ -184,8 +297,16 @@ function verificar(texto){
     log(r.cod,'',r.per.n,'NO AUTORIZADO (PERSONA '+r.per.e+')');
     return;
   }
+  const av = verAviso(r.per);
+  if(av.vencido){
+    pintar('roja','NO AUTORIZADO','', r.per.n+horario(r.per)+bloqueAviso(av),
+           'Se le avisó y no se presentó. No ingresa hasta que Gerencia lo resuelva.');
+    log(r.cod,'',r.per.n,'NO AUTORIZADO (AVISO VENCIDO)');
+    return;
+  }
   if(!r.per.a.length){
-    pintar('amarilla','SIN VEHÍCULO','', r.per.n+horario(r.per), 'La persona no tiene vehículos cargados en la base.');
+    pintar('amarilla','SIN VEHÍCULO','', r.per.n+horario(r.per)+bloqueAviso(av),
+           'La persona no tiene vehículos cargados en la base.');
     log(r.cod,'',r.per.n,'SIN VEHICULO');
     return;
   }
@@ -205,7 +326,8 @@ function listar(){
            '<span class="vm">'+[v.m, ev.ok?'':ev.ver].filter(Boolean).join(' · ')+'</span>'+
          '</button>';
   });
-  pintar('azul','ELEGIR PATENTE','', per.n+horario(per)+'<div class="hor">'+per.a.length+' vehículos en la base</div>',
+  pintar('azul','ELEGIR PATENTE','',
+         per.n+horario(per)+'<div class="hor">'+per.a.length+' vehículos en la base</div>'+bloqueAviso(verAviso(per)),
          'Tocá la patente del vehículo que está entrando. Se registra la que elijas.');
   document.getElementById('lista').innerHTML = h;
 }
@@ -213,13 +335,26 @@ function listar(){
 /** Decisión final sobre un vehículo concreto. Es lo único que se registra. */
 function elegir(i){
   const per = ACTUAL.per, v = per.a[i], ev = evaluar(v);
-  const detalle = per.n + (v.m||v.s ? '<br>'+[v.m,v.s].filter(Boolean).join(' · ') : '') + horario(per);
-  var aviso = ev.msg;
+
+  // El aviso se cuenta como entregado cuando la persona efectivamente entra.
+  // Se marca también acá, en el teléfono, para que el plazo corra aunque el
+  // equipo no vuelva a sincronizar. El backend nunca pisa una fecha ya puesta.
+  var marcar = '';
+  if(per.av && !per.ad && ev.ok){
+    per.ad = selloDe(new Date());
+    guardarBase();
+    marcar = ACTUAL.cod;
+  }
+  const a = verAviso(per);
+
+  const detalle = per.n + (v.m||v.s ? '<br>'+[v.m,v.s].filter(Boolean).join(' · ') : '')
+                + horario(per) + bloqueAviso(a);
+  var aviso = a.hay && ev.ok ? 'Avisale que pase por Gerencia. '+ev.msg : ev.msg;
   if(per.a.length>1){
     aviso += '<br><button class="volver" onclick="listar()">Ver las otras patentes</button>';
   }
   pintar(ev.ok?'verde':'roja', ev.ver, v.p, detalle, aviso);
-  log(ACTUAL.cod, v.p, per.n, ev.ver);
+  log(ACTUAL.cod, v.p, per.n, ev.ver + (marcar ? ' (AVISO ENTREGADO)' : ''), marcar);
 }
 
 function pintar(clase,ver,pat,det,aviso){
@@ -235,9 +370,11 @@ function pintar(clase,ver,pat,det,aviso){
 }
 
 /* ---------- auditoría (se acumula sin señal y se envía al sincronizar) ---------- */
-function log(c,p,n,r){
+function log(c,p,n,r,av){
   const q = JSON.parse(localStorage.getItem('pend')||'[]');
-  q.push({t:Date.now(), c:c, p:p, n:n, r:r, g:PUESTO});
+  const ev = {t:Date.now(), c:c, p:p, n:n, r:r, g:PUESTO};
+  if(av) ev.av = av;      // pedido de sellar AVISADO en la hoja PERSONAS
+  q.push(ev);
   localStorage.setItem('pend', JSON.stringify(q.slice(-500)));
   enviarPendientes();
 }

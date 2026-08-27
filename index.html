@@ -47,6 +47,11 @@
   .veh.mal .vp{color:#8d1a13;text-decoration:line-through}
   .veh.mal .vm{color:#8d1a13;font-weight:700}
 
+  /* consulta a un auto estacionado: se distingue del flujo del portón */
+  button.cons{background:#4a3b7a}
+  .constag{background:#efe6ff;color:#3a2d63;font-size:12px;font-weight:700;letter-spacing:.3px;
+           border-radius:7px;padding:6px 9px;margin-bottom:8px;display:inline-block}
+
   .fila{display:flex;gap:8px;margin-top:12px}
   input,button{font-size:16px;padding:11px;border-radius:9px;border:1px solid #c3cbd6}
   input{flex:1;min-width:0}
@@ -54,6 +59,23 @@
   button.sec{background:#5a6b80}
   .volver{margin-top:10px;background:rgba(255,255,255,.22);color:#fff;font-size:13px;padding:8px 12px;border-radius:8px}
   .pie{margin-top:14px;font-size:12px;color:#5a6b80;text-align:center;line-height:1.6}
+
+  /* barra de puesto: siempre visible, se toca para cambiar de portón */
+  #barra{background:#1c3a5e;color:#fff;padding:7px 14px;display:flex;justify-content:space-between;
+         align-items:center;font-size:13px;cursor:pointer;user-select:none}
+  #barra .pu{font-weight:700;letter-spacing:.3px}
+  #barra .gu{opacity:.75;font-size:12px}
+  #barra .cb{font-size:11px;opacity:.6}
+
+  /* pantalla de alta del teléfono */
+  #alta{display:none;position:fixed;inset:0;background:#12263f;color:#fff;z-index:9;
+        padding:26px 20px;overflow:auto}
+  #alta h2{font-size:19px;margin:0 0 10px}
+  #alta p{font-size:14px;line-height:1.5;opacity:.9}
+  #alta input{width:100%;text-transform:uppercase;letter-spacing:2px;text-align:center;
+              font-size:19px;font-weight:700;margin-top:14px;color:#111}
+  #alta button{width:100%;margin-top:10px;padding:13px;background:#0e8a3e;font-size:16px}
+  #altaMsg{margin-top:12px;font-size:13px;color:#ffd27a;min-height:18px}
 </style>
 </head>
 <body>
@@ -61,6 +83,20 @@
   <b>Acceso vehicular</b>
   <span id="estado">iniciando…</span>
 </header>
+
+<div id="barra" onclick="cambiarPuesto()">
+  <span><span class="pu" id="puestoTxt">—</span> <span class="gu" id="guardiaTxt"></span></span>
+  <span class="cb">tocar para cambiar</span>
+</div>
+
+<div id="alta">
+  <h2>Habilitar este teléfono</h2>
+  <p>Escribí el código de alta que te dio el administrador. Se carga una sola vez:
+     queda guardado en este teléfono y no hay que volver a ponerlo.</p>
+  <input id="altaTk" placeholder="XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters">
+  <button onclick="activar()">Activar</button>
+  <div id="altaMsg"></div>
+</div>
 
 <main>
   <div id="lector"></div>
@@ -78,6 +114,9 @@
     <button onclick="buscarManual()">Buscar</button>
   </div>
   <div class="fila">
+    <button class="cons" style="flex:1" onclick="consultarPatente()">¿De quién es este auto?</button>
+  </div>
+  <div class="fila">
     <button class="sec" style="flex:1" onclick="sincronizar(true)">Actualizar base</button>
     <button class="sec" style="flex:1" onclick="reiniciar()">Nuevo escaneo</button>
   </div>
@@ -92,9 +131,12 @@
 <script>
 /* ================= CONFIGURACIÓN ================= */
 const API   = 'https://script.google.com/macros/s/AKfycbzSKdPxCIYiav8M0K6tr3ZpESzqMUtxlKu0msj6eY0ii26CKXLKBvFiYlZm477BSP8-3A/exec';   // termina en /exec
-const CLAVE = 'jfkdidhdkfdkso85l5lg95l';            // igual que en Codigo.gs
 const PREFIJO = 'PK:';
-const PUESTO  = 'Portón principal';                 // identifica al puesto en el registro
+/* En este archivo YA NO HAY NINGUNA CLAVE. Cada teléfono guarda su propio token,
+   que se carga una sola vez al instalar la app y se da de baja desde la hoja
+   DISPOSITIVOS de la planilla. Como index.html es público, cualquier secreto
+   escrito acá lo puede leer cualquiera que abra la app. */
+const PUESTOS = ['Portón Avalos', 'Portón principal'];
 
 /* Avisos de Gerencia.
    La persona con AVISO cargado entra igual la primera vez y el guardia le
@@ -120,6 +162,42 @@ const FERIADOS = ['2026-01-01','2026-02-16','2026-02-17','2026-03-23','2026-03-2
 /* ================================================= */
 
 let BASE = null, lector = null, ultimo = 0, ACTUAL = null;
+/* Modo consulta: el guardia está identificando un auto estacionado, no
+   autorizando un ingreso. Se apaga solo en el escaneo siguiente. */
+let CONSULTA = false;
+
+/* ---------- identidad del teléfono ---------- */
+function tk(){ return localStorage.getItem('tk') || ''; }
+function guardia(){ return localStorage.getItem('guardia') || ''; }
+function puesto(){
+  const p = localStorage.getItem('puesto');
+  return PUESTOS.indexOf(p) >= 0 ? p : PUESTOS[0];
+}
+function pintarBarra(){
+  document.getElementById('puestoTxt').textContent = puesto();
+  document.getElementById('guardiaTxt').textContent = guardia() ? '· ' + guardia() : '';
+}
+function cambiarPuesto(){
+  const n = PUESTOS[(PUESTOS.indexOf(puesto()) + 1) % PUESTOS.length];
+  if(!confirm('¿Pasar el puesto a "' + n + '"?\n\nTodo lo que escanees desde ahora se registra ahí.')) return;
+  localStorage.setItem('puesto', n);
+  pintarBarra();
+}
+function pedirAlta(msg){
+  document.getElementById('alta').style.display = 'block';
+  document.getElementById('altaMsg').textContent = msg || '';
+}
+async function activar(){
+  const t = document.getElementById('altaTk').value.trim().toUpperCase();
+  if(!t){ pedirAlta('Escribí el código.'); return; }
+  document.getElementById('altaMsg').textContent = 'Verificando…';
+  localStorage.setItem('tk', t);
+  const ok = await sincronizar(false);
+  if(!ok){ localStorage.removeItem('tk'); pedirAlta('Ese código no sirve, o no hay señal. Revisalo con el administrador.'); return; }
+  document.getElementById('alta').style.display = 'none';
+  pintarBarra();
+  iniciarLector();
+}
 
 /* ---------- base local (funciona sin señal) ---------- */
 function cargarLocal(){
@@ -139,19 +217,31 @@ function pintarEstado(){
     BASE.personas+' personas · '+BASE.total+' vehículos en la base.';
 }
 async function sincronizar(avisar){
+  if(!tk()){ pedirAlta('Este teléfono todavía no está habilitado.'); return false; }
   try{
-    const r = await fetch(API+'?action=data&k='+encodeURIComponent(CLAVE), {redirect:'follow'});
+    const r = await fetch(API+'?action=data&k='+encodeURIComponent(tk()), {redirect:'follow'});
     const d = await r.json();
+    if(d.error==='no_autorizado'){
+      // Token dado de baja en la planilla, o mal escrito. El teléfono deja de operar.
+      localStorage.removeItem('tk');
+      pedirAlta('Este teléfono fue dado de baja. Pedí un código nuevo al administrador.');
+      return false;
+    }
     if(d.error) throw new Error(d.error);
     if(!d.p) throw new Error('respuesta_vieja');
     BASE = d;
     localStorage.setItem('base', JSON.stringify(d));
+    if(d.guardia) localStorage.setItem('guardia', d.guardia);
+    if(d.puesto && !localStorage.getItem('puesto')) localStorage.setItem('puesto', d.puesto);
+    pintarBarra();
     pintarEstado();
     enviarPendientes();
     if(avisar) alert('Base actualizada: '+d.personas+' personas, '+d.total+' vehículos.');
+    return true;
   }catch(e){
     if(avisar) alert('No se pudo actualizar (sin conexión o backend desactualizado). '+
                      'Se sigue usando la última base descargada.');
+    return false;
   }
 }
 
@@ -280,7 +370,8 @@ function horario(per){
 }
 
 /* ---------- flujo principal ---------- */
-function verificar(texto){
+function verificar(texto, esConsulta){
+  CONSULTA = !!esConsulta;
   if(!BASE){ pintar('roja','SIN BASE','','','Actualizá la base con señal antes de operar.'); return; }
 
   const r = resolver(texto);
@@ -297,7 +388,7 @@ function verificar(texto){
     log(r.cod,'',r.per.n,'NO AUTORIZADO (PERSONA '+r.per.e+')');
     return;
   }
-  const av = verAviso(r.per);
+  const av = CONSULTA ? {hay:false} : verAviso(r.per);
   if(av.vencido){
     pintar('roja','NO AUTORIZADO','', r.per.n+horario(r.per)+bloqueAviso(av),
            'Se le avisó y no se presentó. No ingresa hasta que Gerencia lo resuelva.');
@@ -340,16 +431,21 @@ function elegir(i){
   // Se marca también acá, en el teléfono, para que el plazo corra aunque el
   // equipo no vuelva a sincronizar. El backend nunca pisa una fecha ya puesta.
   var marcar = '';
-  if(per.av && !per.ad && ev.ok){
+  if(!CONSULTA && per.av && !per.ad && ev.ok){
     per.ad = selloDe(new Date());
     guardarBase();
     marcar = ACTUAL.cod;
   }
-  const a = verAviso(per);
+  // En una consulta no hay nadie enfrente: el bloque de Gerencia no va, y el
+  // texto deja de ser una instrucción para el guardia.
+  const a = CONSULTA ? {hay:false} : verAviso(per);
 
-  const detalle = per.n + (v.m||v.s ? '<br>'+[v.m,v.s].filter(Boolean).join(' · ') : '')
+  const detalle = (CONSULTA ? '<div class="constag">CONSULTA — no cuenta como ingreso</div>' : '')
+                + per.n + (v.m||v.s ? '<br>'+[v.m,v.s].filter(Boolean).join(' · ') : '')
                 + horario(per) + bloqueAviso(a);
-  var aviso = a.hay && ev.ok ? 'Avisale que pase por Gerencia. '+ev.msg : ev.msg;
+  var aviso;
+  if(CONSULTA) aviso = ev.ok ? 'Vehículo autorizado en la base.' : ev.msg;
+  else         aviso = a.hay && ev.ok ? 'Avisale que pase por Gerencia. '+ev.msg : ev.msg;
   if(per.a.length>1){
     aviso += '<br><button class="volver" onclick="listar()">Ver las otras patentes</button>';
   }
@@ -372,7 +468,8 @@ function pintar(clase,ver,pat,det,aviso){
 /* ---------- auditoría (se acumula sin señal y se envía al sincronizar) ---------- */
 function log(c,p,n,r,av){
   const q = JSON.parse(localStorage.getItem('pend')||'[]');
-  const ev = {t:Date.now(), c:c, p:p, n:n, r:r, g:PUESTO};
+  const ev = {t:Date.now(), c:c, p:p, n:n, r:r, g:puesto(), d:(CONSULTA?'CONSULTA':'INGRESO'),
+              i:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)};
   if(av) ev.av = av;      // pedido de sellar AVISADO en la hoja PERSONAS
   q.push(ev);
   localStorage.setItem('pend', JSON.stringify(q.slice(-500)));
@@ -380,9 +477,17 @@ function log(c,p,n,r,av){
 }
 function enviarPendientes(){
   const q = JSON.parse(localStorage.getItem('pend')||'[]');
-  if(!q.length || !navigator.onLine) return;
-  fetch(API, {method:'POST', body: JSON.stringify({k:CLAVE, eventos:q})})
-    .then(function(){ localStorage.setItem('pend','[]'); })
+  if(!q.length || !navigator.onLine || !tk()) return;
+  const n = q.length;
+  fetch(API, {method:'POST', body: JSON.stringify({k:tk(), eventos:q})})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      // Sólo se descarta lo que el servidor confirmó por escrito. Antes se vaciaba
+      // la cola ante CUALQUIER respuesta, incluido un error, y los escaneos se perdían.
+      if(!d || !d.ok) return;
+      const q2 = JSON.parse(localStorage.getItem('pend')||'[]');
+      localStorage.setItem('pend', JSON.stringify(q2.slice(n)));
+    })
     .catch(function(){});
 }
 
@@ -407,14 +512,26 @@ function reiniciar(){
   document.getElementById('lista').innerHTML='';
   document.getElementById('manual').value='';
   ACTUAL = null;
+  CONSULTA = false;
   ultimo = 0;
 }
-function buscarManual(){ verificar(document.getElementById('manual').value); }
+function buscarManual(){ verificar(document.getElementById('manual').value, false); }
+/** Auto estacionado en el predio: identifica al dueño sin registrar un ingreso. */
+function consultarPatente(){
+  const t = document.getElementById('manual').value;
+  if(!t.trim()){ alert('Escribí la patente del auto estacionado.'); return; }
+  verificar(t, true);
+}
 document.getElementById('manual').addEventListener('keydown', function(e){ if(e.key==='Enter') buscarManual(); });
 
 cargarLocal();
-sincronizar(false);
-iniciarLector();
+pintarBarra();
+if(tk()){
+  sincronizar(false);
+  iniciarLector();
+}else{
+  pedirAlta('Este teléfono todavía no está habilitado. Pedile el código de alta al administrador.');
+}
 window.addEventListener('online', function(){ sincronizar(false); });
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 </script>

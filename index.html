@@ -35,6 +35,12 @@
   .ger .h{font-size:13px;margin-top:4px;font-weight:700}
   .ger .p{font-size:12px;margin-top:4px;opacity:.8;line-height:1.3}
 
+  /* el auto ya figura adentro: lo registró este teléfono o cualquier otro */
+  .ing{margin-top:11px;background:#cfe6ff;color:#0b3355;border-radius:9px;padding:9px 12px}
+  .ing:empty{display:none}
+  .ing .t{font-size:16px;font-weight:800;letter-spacing:.3px;line-height:1.2}
+  .ing .p{font-size:12px;margin-top:4px;opacity:.85;line-height:1.35}
+
   /* selector de patentes cuando la persona tiene más de un vehículo */
   #lista{margin-top:12px;display:flex;flex-direction:column;gap:8px}
   #lista:empty{display:none}
@@ -105,6 +111,7 @@
     <div class="veredicto" id="veredicto"></div>
     <div class="patente" id="patente"></div>
     <div class="dato" id="detalle"></div>
+    <div class="ing" id="ingreso"></div>
     <div id="lista"></div>
     <div class="aviso" id="aviso"></div>
   </div>
@@ -236,6 +243,7 @@ async function sincronizar(avisar){
     pintarBarra();
     pintarEstado();
     enviarPendientes();
+    refrescarAdentro(true);
     if(avisar) alert('Base actualizada: '+d.personas+' personas, '+d.total+' vehículos.');
     return true;
   }catch(e){
@@ -359,6 +367,74 @@ function guardarBase(){
   try{ localStorage.setItem('base', JSON.stringify(BASE)); }catch(e){}
 }
 
+/* ---------- ¿este auto ya está adentro? ----------
+   La lista la sirve el backend (action=adentro) desde la hoja ADENTRO de la
+   planilla, que se arma con los escaneos de TODOS los teléfonos. Por eso este
+   guardia ve un ingreso que registró otro, en otro portón.
+
+   Se guarda en el teléfono para que siga respondiendo sin señal. Cada entrada
+   trae su hora, así que lo viejo se descarta también acá: una lista vieja
+   puede quedar corta, nunca mentir con un horario que ya no vale.
+
+   El dato puede tener unos minutos de atraso (la hoja se arma cada 5 minutos).
+   Para lo que sirve —un auto estacionado hace horas— no molesta. */
+const ADENTRO_VIG  = 24*3600*1000;   // ventana que se muestra
+const ADENTRO_CADA = 120000;         // cada cuánto se refresca en segundo plano
+let adentroUlt = 0, PAT_PANEL = '';
+
+function adentroLista(){
+  try{
+    const d = JSON.parse(localStorage.getItem('adentro')||'null');
+    return (d && d.a && typeof d.a === 'object') ? d : {a:{}};
+  }catch(e){ return {a:{}}; }
+}
+function refrescarAdentro(forzar){
+  if(!tk()) return;
+  if(!forzar && Date.now()-adentroUlt < 30000) return;   // no repetir al pedo
+  adentroUlt = Date.now();
+  fetch(API+'?action=adentro&k='+encodeURIComponent(tk()), {redirect:'follow'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      // Backend todavía sin el endpoint: se sigue con lo último que se bajó.
+      if(!d || !d.a) return;
+      localStorage.setItem('adentro', JSON.stringify(d));
+      if(PAT_PANEL) pintarIngreso(PAT_PANEL);   // llegó tarde: se repinta solo
+    })
+    .catch(function(){});
+}
+function hace(ms){
+  const m = Math.round(ms/60000);
+  if(m < 60) return 'hace '+m+' min';
+  const h = Math.floor(m/60);
+  return 'hace '+h+' h'+(m%60 ? ' '+(m%60)+' min' : '');
+}
+function fmtIngreso(ts){
+  const d = new Date(ts), h = new Date();
+  const hh = dosD(d.getHours())+':'+dosD(d.getMinutes());
+  if(d.toDateString() === h.toDateString()) return 'hoy a las '+hh;
+  const ayer = new Date(h.getFullYear(), h.getMonth(), h.getDate()-1);
+  if(d.toDateString() === ayer.toDateString()) return 'ayer a las '+hh;
+  return 'el '+dosD(d.getDate())+'/'+dosD(d.getMonth()+1)+' a las '+hh;
+}
+function pintarIngreso(pat){
+  PAT_PANEL = pat || '';
+  const c = document.getElementById('ingreso');
+  if(!c) return;
+  c.innerHTML = '';
+  // Todo este bloque es un extra informativo: si algo falla se queda callado.
+  // Nunca puede romper la pantalla que le dice al guardia si el auto entra.
+  try{
+    const k = soloAlfaNum(String(pat||'').toUpperCase());
+    if(!k) return;
+    const e = adentroLista().a[k];
+    if(!e || !e.t || Date.now()-e.t > ADENTRO_VIG) return;
+    c.innerHTML = '<div class="t">YA INGRESÓ '+fmtIngreso(e.t).toUpperCase()+'</div>'+
+                  '<div class="p">'+hace(Date.now()-e.t)+
+                  (e.g ? ' · '+e.g : '')+
+                  '. Puede haberlo escaneado otro guardia.</div>';
+  }catch(err){ c.innerHTML = ''; }
+}
+
 /* ---------- evaluación de un vehículo ---------- */
 function evaluar(v){
   if(v.e==='BAJA' || v.e==='SUSPENDIDO')
@@ -372,6 +448,7 @@ function horario(per){
 /* ---------- flujo principal ---------- */
 function verificar(texto, esConsulta){
   CONSULTA = !!esConsulta;
+  refrescarAdentro(false);   // en segundo plano: si llega, se repinta solo
   if(!BASE){ pintar('roja','SIN BASE','','','Actualizá la base con señal antes de operar.'); return; }
 
   const r = resolver(texto);
@@ -461,6 +538,7 @@ function pintar(clase,ver,pat,det,aviso){
   document.getElementById('detalle').innerHTML     = det||'';
   document.getElementById('lista').innerHTML       = '';
   document.getElementById('aviso').innerHTML       = aviso||'';
+  pintarIngreso(pat);
   if(navigator.vibrate) navigator.vibrate(clase==='verde'?120:(clase==='azul'?60:[90,70,90]));
   window.scrollTo(0,0);
 }
@@ -510,6 +588,8 @@ function iniciarLector(){
 function reiniciar(){
   document.getElementById('panel').className='panel';
   document.getElementById('lista').innerHTML='';
+  document.getElementById('ingreso').innerHTML='';
+  PAT_PANEL='';
   document.getElementById('manual').value='';
   ACTUAL = null;
   CONSULTA = false;
@@ -528,11 +608,13 @@ cargarLocal();
 pintarBarra();
 if(tk()){
   sincronizar(false);
+  refrescarAdentro(true);
+  setInterval(function(){ refrescarAdentro(true); }, ADENTRO_CADA);
   iniciarLector();
 }else{
   pedirAlta('Este teléfono todavía no está habilitado. Pedile el código de alta al administrador.');
 }
-window.addEventListener('online', function(){ sincronizar(false); });
+window.addEventListener('online', function(){ sincronizar(false); refrescarAdentro(true); });
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 </script>
 </body>

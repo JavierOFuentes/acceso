@@ -229,8 +229,17 @@ async function sincronizar(avisar){
     const r = await fetch(API+'?action=data&k='+encodeURIComponent(tk()), {redirect:'follow'});
     const d = await r.json();
     if(d.error==='no_autorizado'){
-      // Token dado de baja en la planilla, o mal escrito. El teléfono deja de operar.
+      // Token dado de baja en la planilla, o mal escrito. El teléfono deja de operar
+      // Y ADEMAS SE QUEDA SIN LOS DATOS: cortarle el acceso no alcanza si la ultima
+      // copia de la base -656 personas con nombre, patente y horario- le queda
+      // guardada adentro del teléfono. Son datos personales de agentes (Ley 25.326).
+      // 'pend' NO se toca: puede tener escaneos sin enviar y eso es auditoría.
       localStorage.removeItem('tk');
+      localStorage.removeItem('base');
+      localStorage.removeItem('adentro');
+      BASE = null;
+      reiniciar();
+      pintarEstado();
       pedirAlta('Este teléfono fue dado de baja. Pedí un código nuevo al administrador.');
       return false;
     }

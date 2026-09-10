@@ -1,5 +1,5 @@
 /* Service worker: permite que la app abra sin señal usando la última base descargada. */
-const CACHE = 'acceso-v10';
+const CACHE = 'acceso-v11';
 const ARCHIVOS = ['index.html', 'manifest.json', 'html5-qrcode.min.js', 'icono192.png', 'icono512.png'];
 
 self.addEventListener('install', e => {
